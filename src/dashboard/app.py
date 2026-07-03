@@ -69,6 +69,23 @@ if page == "Research Feed":
 
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
+    st.divider()
+    st.markdown("### Pending actions")
+    st.caption("Hypotheses waiting for a governance decision.")
+
+    pending_stages = ["idea", "experiment", "statistical_review", "risk_review", "committee"]
+    pending = df[df["Stage"].isin(pending_stages) & (df["Status"] != "failed")]
+
+    if pending.empty:
+        st.info("Nothing pending — all active hypotheses are either in paper trading, production, or retired.")
+    else:
+        for _, row in pending.iterrows():
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3, 1, 1])
+                c1.markdown(f"**#{row['#']} — {row['Title']}**")
+                c2.markdown(f"`{row['Stage']}`")
+                c3.markdown(f"Sharpe: {row['Sharpe']}")
+
 # ── Page: Hypothesis Detail ───────────────────────────────────────
 elif page == "Hypothesis Detail":
     st.title("Hypothesis detail")
@@ -80,6 +97,17 @@ elif page == "Hypothesis Detail":
     gov = db.query(GovernanceRecord).filter_by(hypothesis_id=hyp.id).first()
 
     st.subheader(f"#{hyp.hypothesis_number} — {hyp.title}")
+    
+    # Show persistent action feedback across reruns
+    action_key = f"last_action_{hyp.hypothesis_number}"
+    if action_key in st.session_state:
+        msg = st.session_state[action_key]
+        if msg.startswith("✅"):
+            st.success(msg)
+        else:
+            st.error(msg)
+        del st.session_state[action_key]
+    
     st.write(hyp.thesis)
 
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -107,6 +135,80 @@ elif page == "Hypothesis Detail":
         else:
             st.info("No governance history available.")
 
+        st.divider()
+        st.markdown("### Governance actions")
+
+        from src.agents.governance_actions import get_allowed_actions, advance_stage, retire_hypothesis
+        from src.models.governance import GovernanceStage
+
+        # Re-fetch gov after any potential rerun to get fresh stage
+        gov = db.query(GovernanceRecord).filter_by(hypothesis_id=hyp.id).first()
+        actions = get_allowed_actions(hyp, gov)
+
+        if not actions:
+            st.info("No actions available from current stage.")
+        else:
+            notes_key = f"notes_{hyp.hypothesis_number}"
+            notes_input = st.text_input(
+                "Notes (optional)", key=notes_key,
+                placeholder="Reason for this transition..."
+            )
+
+            # Handle pending action from previous render cycle
+            pending_key = f"pending_action_{hyp.hypothesis_number}"
+            if pending_key in st.session_state:
+                pending = st.session_state.pop(pending_key)
+                target = GovernanceStage(pending["target"])
+                notes = pending["notes"]
+
+                if target == GovernanceStage.RETIRED:
+                    if not notes:
+                        st.error("Retirement reason is required.")
+                    else:
+                        ok, msg = retire_hypothesis(db, hyp, notes)
+                        if ok:
+                            st.success(f"✅ {msg}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {msg}")
+                else:
+                    ok, msg = advance_stage(db, hyp, target, notes)
+                    if ok:
+                        st.success(f"✅ {msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+
+            # Render action buttons
+            for action in actions:
+                col_btn, col_reason = st.columns([1, 3])
+                btn_key = f"btn_{hyp.hypothesis_number}_{action['target_stage'].value}"
+
+                with col_btn:
+                    if action["target_stage"] == GovernanceStage.RETIRED:
+                        clicked = st.button(
+                            f"🗄️ {action['label']}", key=btn_key,
+                            disabled=not action["enabled"], type="secondary"
+                        )
+                    else:
+                        clicked = st.button(
+                            f"→ {action['label']}", key=btn_key,
+                            disabled=not action["enabled"], type="primary"
+                        )
+
+                with col_reason:
+                    if not action["enabled"]:
+                        st.caption(f"⛔ {action['blocked_reason']}")
+                    else:
+                        st.caption("✅ Prerequisites met")
+
+                if clicked:
+                    st.session_state[pending_key] = {
+                        "target": action["target_stage"].value,
+                        "notes": notes_input
+                    }
+                    st.rerun()
+                    
     with tab3:
         if gov and gov.debate_record:
             d = gov.debate_record
