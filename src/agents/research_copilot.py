@@ -6,6 +6,7 @@ from src.models.hypothesis import Hypothesis
 from src.models.governance import GovernanceRecord
 from src.models.research_memory import ResearchMemory
 from src.models.alpha_registry import AlphaSignal
+from src.data.relational_knowledge_store import get_knowledge_store
 from sqlalchemy import text
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -83,6 +84,29 @@ def build_research_corpus(db: Session) -> str:
                 f"MaxDD={r.paper_max_drawdown}, Action={r.recommended_action}, "
                 f"Evaluated={str(r.evaluated_at)[:10]}"
             )
+
+    # Knowledge graph context
+    ks = get_knowledge_store()
+    sections.append("\n=== KNOWLEDGE GRAPH ===")
+
+    # Sector map
+    sectors = {}
+    for ticker in ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","JPM","BAC","GS",
+                   "LLY","UNH","XOM","AMD","QCOM","INTC"]:
+        e = ks.get_entity(ticker)
+        if e:
+            sectors.setdefault(e.sector, []).append(ticker)
+
+    for sector, tickers in sectors.items():
+        sections.append(f"Sector {sector}: {', '.join(tickers)}")
+
+    # ETF crowding for top momentum names
+    top_names = ["NVDA", "AMD", "META", "MSFT", "AAPL"]
+    crowding = ks.get_common_etf_exposure(top_names)
+    sections.append(f"ETF overlap (top momentum names {top_names}):")
+    for etf, info in list(crowding.items())[:5]:
+        sections.append(f"  {etf}: holds {info['overlap_count']}/{len(top_names)} names "
+                       f"({info['concentration_risk']} concentration risk)")
 
     return "\n\n".join(sections)
 

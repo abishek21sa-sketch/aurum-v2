@@ -8,6 +8,7 @@ from src.models.hypothesis import Hypothesis, HypothesisStatus
 from src.models.governance import GovernanceRecord, GovernanceStage
 from src.models.experiment_queue import ExperimentJob, JobStatus, JobPriority
 from src.models.research_memory import ResearchMemory
+from src.data.relational_knowledge_store import get_knowledge_store
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -132,9 +133,29 @@ def retrieve_relevant_memories(db: Session, signal_types: list[str], conditions:
     return relevant[:5]
 
 def build_observation_prompt(observations: dict, memories: list[dict]) -> str:
+    ks = get_knowledge_store()
+
+    # Add real sector/ETF context to help the scientist reason about concentration
+    top_tech = ks.get_sector_tickers("Information Technology")
+    top_fin = ks.get_sector_tickers("Financials")
+    nvda_etfs = [e["etf"] for e in ks.get_etf_exposure("NVDA")]
+    momentum_concentration = ks.get_sector_concentration(
+        ["NVDA", "AMD", "META", "MSFT", "AAPL", "GOOGL", "AMZN"]
+    )
+
+    knowledge_context = f"""
+Knowledge Graph Context (use when reasoning about sector concentration and crowding):
+- Information Technology tickers in universe: {top_tech}
+- Financials tickers in universe: {top_fin}
+- NVDA ETF memberships: {nvda_etfs}
+- Top momentum names sector concentration: {json.dumps({k: f"{v['pct']*100:.0f}%" for k, v in momentum_concentration.items()})}
+- Warning: top momentum names are 57% Information Technology — high concentration risk
+"""
+
     prompt = f"""Current market observations:
 {json.dumps(observations, indent=2)}
 
+{knowledge_context}
 """
     if memories:
         prompt += f"""Research memory — past failures relevant to these conditions:

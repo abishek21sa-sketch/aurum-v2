@@ -44,7 +44,7 @@ def load_memories(db):
 # ── Sidebar navigation ────────────────────────────────────────────
 st.sidebar.title("AURUM V2")
 st.sidebar.caption("AI-native quantitative research firm")
-page = st.sidebar.radio("Navigate", ["Research Feed", "Hypothesis Detail", "Research Memory", "Memory Lineage", "Alpha Registry", "Research Copilot"])
+page = st.sidebar.radio("Navigate", ["Research Feed", "Hypothesis Detail", "Research Memory", "Memory Lineage", "Alpha Registry", "Research Copilot", "Knowledge Graph"])
 db = get_db()
 
 # ── Page: Research Feed ───────────────────────────────────────────
@@ -489,5 +489,95 @@ elif page == "Research Copilot":
         if st.button("Clear", key="copilot_clear"):
             del st.session_state["copilot_answer"]
             del st.session_state["copilot_last_question"]
+
+# ── Page: Knowledge Graph ─────────────────────────────────────────
+elif page == "Knowledge Graph":
+    st.title("Knowledge graph")
+    st.caption("Entity relationships, sector peers, ETF exposure, and macro sensitivities — the semantic layer over market data.")
+
+    from src.data.relational_knowledge_store import get_knowledge_store, ENTITY_DATA, ETF_CONSTITUENCIES
+    import pandas as pd
+
+    ks = get_knowledge_store()
+
+    tab_sector, tab_etf, tab_entity, tab_crowding = st.tabs([
+        "Sector map", "ETF constituencies", "Entity lookup", "Crowding analysis"
+    ])
+
+    with tab_sector:
+        st.markdown("### Sector distribution across universe")
+        sector_data = {}
+        for ticker, data in ENTITY_DATA.items():
+            sector = data[1]
+            sector_data.setdefault(sector, []).append(ticker)
+
+        for sector, tickers in sorted(sector_data.items(), key=lambda x: -len(x[1])):
+            with st.container(border=True):
+                c1, c2 = st.columns([1, 4])
+                c1.metric(sector.split(" ")[-1], len(tickers))
+                c2.write(", ".join(tickers))
+
+    with tab_etf:
+        st.markdown("### ETF constituency map")
+        etf_rows = []
+        for etf, tickers in ETF_CONSTITUENCIES.items():
+            etf_rows.append({"ETF": etf, "Holdings": len(tickers), "Tickers": ", ".join(tickers[:8]) + ("..." if len(tickers) > 8 else "")})
+        st.dataframe(pd.DataFrame(etf_rows), use_container_width=True, hide_index=True)
+
+    with tab_entity:
+        st.markdown("### Entity detail")
+        ticker = st.selectbox("Select ticker", sorted(ENTITY_DATA.keys()))
+        entity = ks.get_entity(ticker)
+        if entity:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Sector", entity.sector.split(" ")[-1])
+            c2.metric("Industry", entity.industry[:20])
+            c3.metric("Cap tier", entity.market_cap_tier)
+
+            st.markdown("**ETF memberships:**")
+            etfs = ks.get_etf_exposure(ticker)
+            if etfs:
+                st.write(", ".join(e["etf"] for e in etfs))
+            else:
+                st.write("None in our tracked ETFs")
+
+            st.markdown("**Macro sensitivities:**")
+            macros = ks.get_macro_sensitivities(ticker)
+            for m in macros:
+                st.markdown(f"- `{m}`")
+
+            st.markdown("**Sector peers:**")
+            peers = ks.get_peers(ticker)
+            st.write(", ".join(p.ticker for p in peers))
+
+    with tab_crowding:
+        st.markdown("### Portfolio crowding analysis")
+        st.caption("Select tickers to see ETF overlap and sector concentration risk.")
+
+        selected = st.multiselect(
+            "Select tickers",
+            sorted(ENTITY_DATA.keys()),
+            default=["NVDA", "AMD", "META", "MSFT", "AAPL", "GOOGL", "AMZN"]
+        )
+
+        if selected:
+            c1, c2 = st.columns(2)
+
+            with c1:
+                st.markdown("**Sector concentration:**")
+                concentration = ks.get_sector_concentration(selected)
+                for sector, info in concentration.items():
+                    flag = "⚠️" if info["concentration_flag"] else "✅"
+                    st.markdown(f"{flag} **{sector}**: {info['count']} tickers ({info['pct']*100:.0f}%)")
+
+            with c2:
+                st.markdown("**ETF crowding:**")
+                crowding = ks.get_common_etf_exposure(selected)
+                if crowding:
+                    for etf, info in sorted(crowding.items(), key=lambda x: -x[1]["overlap_count"])[:8]:
+                        risk_color = "🔴" if info["concentration_risk"] == "high" else "🟡" if info["concentration_risk"] == "medium" else "🟢"
+                        st.markdown(f"{risk_color} **{etf}**: {info['overlap_count']}/{len(selected)} names")
+                else:
+                    st.info("No common ETF exposure found.")
 
 db.close()

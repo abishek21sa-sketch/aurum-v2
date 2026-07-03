@@ -5,10 +5,35 @@ from sqlalchemy.orm import Session
 from src.core.config import ANTHROPIC_API_KEY
 from src.models.hypothesis import Hypothesis
 from src.models.governance import GovernanceRecord, GovernanceStage
+from src.data.relational_knowledge_store import get_knowledge_store
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 def _build_context(hypothesis: Hypothesis, gov: GovernanceRecord) -> str:
+    ks = get_knowledge_store()
+
+    # Build knowledge context for this hypothesis
+    # Extract tickers from universe and get real relationship data
+    universe_tickers = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA",
+                        "JPM","BAC","GS","LLY","UNH","AMD","QCOM","INTC"]
+
+    sector_concentration = ks.get_sector_concentration(universe_tickers)
+    etf_crowding = ks.get_common_etf_exposure(universe_tickers[:7])
+
+    # Get macro sensitivities for signal components
+    signal_factors = [c["factor"] for c in (hypothesis.signal_components or [])]
+    momentum_tickers = ["NVDA", "AMD", "META", "MSFT", "AAPL"]
+    macro_context = {}
+    for t in momentum_tickers:
+        macro_context[t] = ks.get_macro_sensitivities(t)
+
+    knowledge_context = f"""
+Knowledge Graph Context:
+- Universe sector concentration: {json.dumps({k: f"{v['pct']*100:.0f}%" for k, v in sector_concentration.items()})}
+- Top ETF crowding (momentum names): {', '.join([f"{etf}:holds {info['overlap_count']}/7 names" for etf, info in list(etf_crowding.items())[:3]])}
+- Macro sensitivities (key names): {json.dumps({t: macros[:3] for t, macros in macro_context.items()})}
+"""
+
     return f"""Hypothesis #{hypothesis.hypothesis_number}: {hypothesis.title}
 
 Thesis: {hypothesis.thesis}
@@ -28,6 +53,7 @@ Backtest results:
 - Holding period: {hypothesis.expected_holding_days} days
 
 Statistical review: {json.dumps(gov.statistical_review, indent=2) if gov.statistical_review else "Not available"}
+{knowledge_context}
 """
 
 def _call_claude(system: str, user: str, max_tokens: int = 1000) -> str:
