@@ -156,7 +156,8 @@ A Streamlit interface with five views:
 | Fundamental data | SEC EDGAR XBRL API (EPS history, quarterly filings) — 48/50 ticker coverage |
 | Backtesting | `pandas` / `numpy`, non-overlapping rebalance simulation + circuit-breaker simulation |
 | Statistics | `scipy.stats` — t-tests, asymptotic Sharpe significance |
-| Interface | Streamlit (5-page research terminal) |
+| Interface | Streamlit (8-page research terminal) |
+| Scenario analysis | Analytical impact estimation via sector/factor exposure + Claude synthesis |
 
 ---
 
@@ -181,19 +182,21 @@ aurum-v2/
 │   │   ├── research_scientist.py     # hypothesis generation with memory retrieval
 │   │   ├── backtester.py             # composite signal + non-overlapping backtest
 │   │   │                             # + circuit-breaker simulation + EDGAR wiring
-│   │   ├── statistical_validator.py  # 4-gate significance testing (t-test, Sharpe,
-│   │   │                             # stability, sample size)
-│   │   ├── debate_engine.py          # Bull / Bear / Risk / Judge adversarial committee
-│   │   ├── memory_extractor.py       # debate → structured Research Memory
+│   │   ├── statistical_validator.py  # 4-gate significance testing
+│   │   ├── debate_engine.py          # Bull/Bear/Risk/Judge + Knowledge Graph context
+│   │   ├── memory_extractor.py       # debate to structured Research Memory
 │   │   ├── alpha_registrar.py        # governance-integrity-checked registry admission
-│   │   ├── data_quality_debate.py    # ad-hoc debate framework for empirical findings
-│   │   └── continuous_learning.py    # full-registry paper trading evaluation +
-│   │                                 # decay detection + persistent learning reports
+│   │   ├── data_quality_debate.py    # ad-hoc debate for empirical findings
+│   │   ├── continuous_learning.py    # full-registry paper trading evaluation
+│   │   ├── governance_actions.py     # stage-gated advancement with prerequisites
+│   │   ├── research_copilot.py       # NL search over full research corpus
+│   │   └── portfolio_lab.py          # scenario stress testing + AI explainer
 │   └── dashboard/
-│       └── app.py                    # 5-page Streamlit terminal:
+│       └── app.py                    # 8-page Streamlit research terminal:
 │                                     # Research Feed | Hypothesis Detail |
 │                                     # Research Memory | Memory Lineage |
-│                                     # Alpha Registry (with learning reports)
+│                                     # Alpha Registry | Research Copilot |
+│                                     # Knowledge Graph | Portfolio Lab
 ├── tests/                            # one test file per agent/module
 ├── migrations/                       # Alembic migrations
 ├── .env                              # DATABASE_URL + ANTHROPIC_API_KEY
@@ -228,23 +231,39 @@ python -m tests.run_more_debates
 # 6. Run continuous learning across the full registry (V2.7)
 python -m tests.test_v27_full_registry
 
-# 7. Launch the dashboard
+# 7. Test the Knowledge Graph
+python -m tests.test_knowledge_store
+
+# 8. Run Portfolio Lab stress tests
+python -m tests.test_portfolio_lab
+
+# 9. Launch the 8-page dashboard
 streamlit run src/dashboard/app.py
 ```
 
 ---
 
+## Build status
+
+All five layers of the V2 roadmap are complete:
+
+```
+Layer 1 — Core Research Loop      ✅ Research Scientist, Backtester, Governance
+Layer 2 — Research Intelligence   ✅ Debate Engine, Continuous Learning, Data Lake, Research Memory
+Layer 3 — Knowledge Graph         ✅ Relational KnowledgeStore (Neo4j-swappable abstraction)
+Layer 4 — Research Operations     ✅ Writable Governance Workflow, Research Copilot (NL search)
+Layer 5 — Portfolio Lab           ✅ Scenario stress testing across all registered alphas
+```
+
 ## Honest limitations
 
-This is a research platform, not a production trading system, and it's worth being direct about where the current build stops:
+This is a research platform, not a production trading system:
 
-- **Earnings revision now uses real SEC EDGAR XBRL data** (Tier 1 data lake complete), validated via a matched-universe controlled test confirming the improvement is genuine signal quality (+0.94 OOS Sharpe) rather than a universe-composition artifact. Institutional flow remains a price-volume proxy — replacing it with real dark-pool or 13F data is the next Tier 1 gap. EDGAR coverage is 48/50 tickers; BRK-B and V have documented structural reporting gaps.
-- **The Knowledge Graph (entity relationships, sector/ETF exposure mapping) is not built.** It's deliberately deferred behind a planned storage abstraction so the relational version ships first and a graph backend can be swapped in later without touching the rest of the system.
-- **The Research Scheduler (compute/API budget allocation across hypotheses) does not exist yet** — relevant once hypothesis generation runs in batches rather than one at a time.
-- **Continuous Learning has been run on one hypothesis, not the full registry** — it's a working mechanism, not yet an automated nightly job.
-- **The Alpha Registry currently only has two members.** Hypothesis #3 was correctly excluded after the governance bug fix described above, and no revised version of it has been generated — a real research pipeline would either re-debate a revised #3 or formally retire the idea, and right now it just sits at "needs revision," unresolved.
-
-These are the next pieces, in roughly that priority order.
+- **Institutional flow is still a price-volume proxy.** Earnings revision now uses real SEC EDGAR XBRL data (48/50 ticker coverage, +0.94 OOS Sharpe improvement validated via matched-universe controlled test). Institutional flow replacing it with real dark-pool or 13F data is the next data gap.
+- **The Knowledge Graph is relational, not a true graph database.** The `KnowledgeStore` abstraction is in place — migrating to Neo4j requires only implementing the same interface, not touching any consumers. The relational version covers 50 tickers with GICS classification, ETF constituencies, and macro sensitivity tags.
+- **The Research Scheduler does not exist.** Relevant once hypothesis generation runs in batches rather than one at a time. With 8 hypotheses, there is no real contention to schedule.
+- **The Alpha Registry has two members.** Hypothesis #3 was correctly excluded after the governance integrity bug was caught and fixed. No revised version has been generated — it sits at "needs revision," unresolved, which is realistic: not every research idea gets picked back up.
+- **Portfolio Lab scenario impacts are analytical estimates, not mark-to-market P&L.** The system uses sector/factor exposure mappings and historical analog returns to estimate scenario impact — it does not have access to real-time positions or intraday data.
 
 ---
 

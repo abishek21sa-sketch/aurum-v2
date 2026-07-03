@@ -44,7 +44,7 @@ def load_memories(db):
 # ── Sidebar navigation ────────────────────────────────────────────
 st.sidebar.title("AURUM V2")
 st.sidebar.caption("AI-native quantitative research firm")
-page = st.sidebar.radio("Navigate", ["Research Feed", "Hypothesis Detail", "Research Memory", "Memory Lineage", "Alpha Registry", "Research Copilot", "Knowledge Graph"])
+page = st.sidebar.radio("Navigate", ["Research Feed", "Hypothesis Detail", "Research Memory", "Memory Lineage", "Alpha Registry", "Research Copilot", "Knowledge Graph", "Portfolio Lab"])
 db = get_db()
 
 # ── Page: Research Feed ───────────────────────────────────────────
@@ -579,5 +579,91 @@ elif page == "Knowledge Graph":
                         st.markdown(f"{risk_color} **{etf}**: {info['overlap_count']}/{len(selected)} names")
                 else:
                     st.info("No common ETF exposure found.")
+
+# ── Page: Portfolio Lab ───────────────────────────────────────────
+elif page == "Portfolio Lab":
+    st.title("Portfolio laboratory")
+    st.caption("Stress-test registered alphas against macro and market shock scenarios.")
+
+    from src.agents.portfolio_lab import SCENARIOS, estimate_alpha_scenario_impact, explain_scenario_impact
+    from src.models.alpha_registry import AlphaSignal
+
+    alphas = db.query(AlphaSignal).filter_by(is_active=True).all()
+
+    if not alphas:
+        st.info("No active alphas in the registry to stress-test.")
+    else:
+        col1, col2 = st.columns([1, 2])
+
+        with col1:
+            st.markdown("### Select scenario")
+            scenario_key = st.radio(
+                "Scenario",
+                list(SCENARIOS.keys()),
+                format_func=lambda k: SCENARIOS[k]["name"],
+                key="lab_scenario"
+            )
+
+            scenario = SCENARIOS[scenario_key]
+            st.divider()
+            st.caption(scenario["description"])
+            st.caption(f"Historical analogs: {', '.join(scenario['historical_analogs'])}")
+            st.caption(f"VIX spike: +{scenario['vix_spike']} pts | Duration: {scenario['duration_days']}d")
+
+        with col2:
+            st.markdown("### Alpha impact analysis")
+
+            if st.button("Run stress test", type="primary", key="lab_run"):
+                with st.spinner(f"Running {scenario['name']} across {len(alphas)} alpha(s)..."):
+                    results = []
+                    for alpha in alphas:
+                        hyp = db.query(Hypothesis).filter_by(id=alpha.hypothesis_id).first()
+                        if hyp:
+                            impact = estimate_alpha_scenario_impact(alpha, hyp, scenario)
+                            explanation = explain_scenario_impact(
+                                alpha, hyp, scenario_key, impact
+                            )
+                            results.append({
+                                "alpha": alpha,
+                                "hyp": hyp,
+                                "impact": impact,
+                                "explanation": explanation
+                            })
+                    st.session_state["lab_results"] = results
+
+            if "lab_results" in st.session_state:
+                for r in st.session_state["lab_results"]:
+                    with st.container(border=True):
+                        impact = r["impact"]
+                        alpha = r["alpha"]
+                        hyp = r["hyp"]
+
+                        h1, h2, h3, h4 = st.columns(4)
+                        h1.markdown(f"**H#{hyp.hypothesis_number}**")
+                        impact_pct = impact['estimated_portfolio_impact'] * 100
+                        h2.metric(
+                            "Est. Impact",
+                            f"{impact_pct:.1f}%",
+                            delta=f"{impact_pct:.1f}%",
+                            delta_color="inverse"
+                        )
+                        h3.metric(
+                            "Circuit Breaker",
+                            "FIRES ✅" if impact["circuit_breaker_fires"] else "idle ⚠️"
+                        )
+                        h4.metric("Crowding", f"{impact['crowding_amplifier']:.2f}x")
+
+                        st.caption(alpha.signal_name)
+                        st.write(r["explanation"])
+
+                        with st.expander("Impact breakdown"):
+                            b1, b2, b3 = st.columns(3)
+                            b1.metric("Sector contribution", f"{impact['sector_contribution']*100:.1f}%")
+                            b2.metric("Factor contribution", f"{impact['factor_contribution']*100:.1f}%")
+                            b3.metric("VIX spike", f"+{impact['vix_spike']} pts")
+                            if impact["circuit_breaker_note"]:
+                                st.caption(f"🔔 {impact['circuit_breaker_note']}")
+                            if impact["idiosyncratic_note"]:
+                                st.caption(f"⚡ {impact['idiosyncratic_note']}")
 
 db.close()
