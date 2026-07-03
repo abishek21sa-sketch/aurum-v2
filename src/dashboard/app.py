@@ -44,8 +44,7 @@ def load_memories(db):
 # ── Sidebar navigation ────────────────────────────────────────────
 st.sidebar.title("AURUM V2")
 st.sidebar.caption("AI-native quantitative research firm")
-page = st.sidebar.radio("Navigate", ["Research Feed", "Hypothesis Detail", "Research Memory", "Memory Lineage", "Alpha Registry"])
-
+page = st.sidebar.radio("Navigate", ["Research Feed", "Hypothesis Detail", "Research Memory", "Memory Lineage", "Alpha Registry", "Research Copilot"])
 db = get_db()
 
 # ── Page: Research Feed ───────────────────────────────────────────
@@ -208,7 +207,7 @@ elif page == "Hypothesis Detail":
                         "notes": notes_input
                     }
                     st.rerun()
-                    
+
     with tab3:
         if gov and gov.debate_record:
             d = gov.debate_record
@@ -439,5 +438,56 @@ elif page == "Alpha Registry":
                                    f"VIX max: {latest.vix_max_observed} "
                                    f"({'breach' if latest.vix_breach_occurred else 'no breach'}) | "
                                    f"Circuit breaker fired: {latest.circuit_breaker_triggers}x")
+
+# ── Page: Research Copilot ────────────────────────────────────────
+elif page == "Research Copilot":
+    st.title("Research copilot")
+    st.caption("Ask anything about the hypothesis corpus, debate findings, research memories, or alpha registry.")
+
+    from src.agents.research_copilot import query_copilot
+
+    # Example questions
+    examples = [
+        "Which hypotheses failed because of regime conditioning?",
+        "What did the Bear Agent find wrong with H#7?",
+        "What lessons have we learned about VIX circuit-breakers?",
+        "Which alphas are active and what are their paper trading results?",
+        "What should we test next based on what we know?",
+        "Which hypotheses have been through the full governance pipeline?",
+    ]
+
+    st.markdown("**Example questions** — click to run instantly:")
+    cols = st.columns(3)
+    for i, ex in enumerate(examples):
+        if cols[i % 3].button(ex, key=f"ex_{i}", use_container_width=True):
+            with st.spinner("Searching research corpus..."):
+                answer = query_copilot(db, ex)
+            st.session_state["copilot_answer"] = answer
+            st.session_state["copilot_last_question"] = ex
+            st.rerun()
+
+    st.divider()
+
+    question = st.text_input(
+        "Or ask your own question",
+        placeholder="e.g. Which strategies survived the VIX spike?",
+        key="copilot_input"
+    )
+
+    if st.button("Ask", type="primary", key="copilot_ask") and question:
+        with st.spinner("Searching research corpus..."):
+            answer = query_copilot(db, question)
+        st.session_state["copilot_answer"] = answer
+        st.session_state["copilot_last_question"] = question
+
+    if "copilot_answer" in st.session_state:
+        st.divider()
+        if "copilot_last_question" in st.session_state:
+            st.caption(f"Q: {st.session_state['copilot_last_question']}")
+        st.markdown("### Answer")
+        st.markdown(st.session_state["copilot_answer"])
+        if st.button("Clear", key="copilot_clear"):
+            del st.session_state["copilot_answer"]
+            del st.session_state["copilot_last_question"]
 
 db.close()
