@@ -59,6 +59,7 @@ page = st.sidebar.radio("Navigate", [
     "Alpha Registry",
     "Research Copilot",
     "Knowledge Graph",
+    "Macro Data",
     "Portfolio Lab"
 ])
 
@@ -904,6 +905,160 @@ elif page == "🗄️ Retirement Queue":
                             st.error(msg)
                     else:
                         st.error("Retirement reason is required.")
+
+# ── Page: Macro Data ──────────────────────────────────────────────
+elif page == "Macro Data":
+    st.title("Macro data")
+    st.caption("Real-time macro regime from FRED — feeds directly into Research Scientist observations.")
+
+    from src.data.fred_client import get_macro_snapshot, macro_snapshot_to_observations
+
+    if st.button("Refresh FRED data", type="primary", key="fred_refresh"):
+        with st.spinner("Fetching from FRED..."):
+            st.session_state["fred_snapshot"] = get_macro_snapshot()
+
+    if "fred_snapshot" not in st.session_state:
+        with st.spinner("Fetching from FRED..."):
+            st.session_state["fred_snapshot"] = get_macro_snapshot()
+
+    snapshot = st.session_state["fred_snapshot"]
+
+    if "error" in snapshot:
+        st.error(f"FRED unavailable: {snapshot['error']}")
+    else:
+        st.caption(f"Last updated: {snapshot['timestamp']}")
+
+        # Regime badges
+        r1, r2, r3, r4, r5 = st.columns(5)
+        regime_colors = {
+            "expansion": "🟢", "transition": "🟡",
+            "contraction": "🔴", "late_cycle": "🟠", "unknown": "⚪"
+        }
+        vix_colors = {"low": "🟢", "elevated": "🟡", "stressed": "🔴", "unknown": "⚪"}
+        inflation_colors = {"low": "🟢", "moderate": "🟡", "high": "🔴",
+                           "deflating": "🔵", "unknown": "⚪"}
+        curve_colors = {"normal": "🟢", "flat": "🟡", "inverted": "🔴", "unknown": "⚪"}
+        rate_colors = {"stable": "🟢", "falling": "🟡", "rising": "🔴", "unknown": "⚪"}
+
+        r1.metric("Regime",
+                  f"{regime_colors.get(snapshot['regime'], '⚪')} {snapshot['regime']}")
+        r2.metric("VIX",
+                  f"{vix_colors.get(snapshot['vix_regime'], '⚪')} {snapshot['vix_regime']}")
+        r3.metric("Inflation",
+                  f"{inflation_colors.get(snapshot['inflation_pressure'], '⚪')} "
+                  f"{snapshot['inflation_pressure']}")
+        r4.metric("Yield Curve",
+                  f"{curve_colors.get(snapshot['yield_curve'], '⚪')} {snapshot['yield_curve']}")
+        r5.metric("Rates",
+                  f"{rate_colors.get(snapshot['rate_environment'], '⚪')} "
+                  f"{snapshot['rate_environment']}")
+
+        st.divider()
+
+        # Key levels
+        st.markdown("### Key levels")
+        kl = snapshot["key_levels"]
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if kl.get("fed_funds_rate"):
+                st.metric("Fed Funds Rate", f"{kl['fed_funds_rate']:.2f}%")
+            if kl.get("unemployment_rate"):
+                st.metric("Unemployment", f"{kl['unemployment_rate']:.1f}%")
+            if kl.get("cpi_yoy_pct"):
+                st.metric("CPI YoY", f"{kl['cpi_yoy_pct']:.2f}%",
+                         delta="above target" if kl['cpi_yoy_pct'] > 2.5 else "near target",
+                         delta_color="inverse")
+        with c2:
+            if kl.get("ten_year_yield"):
+                st.metric("10Y Treasury", f"{kl['ten_year_yield']:.2f}%")
+            if kl.get("yield_spread_10y2y"):
+                st.metric("10Y-2Y Spread", f"{kl['yield_spread_10y2y']:.2f}%",
+                         delta="normal" if kl['yield_spread_10y2y'] > 0.5
+                         else "flat" if kl['yield_spread_10y2y'] > 0
+                         else "inverted",
+                         delta_color="normal" if kl['yield_spread_10y2y'] > 0.5
+                         else "off")
+        with c3:
+            if kl.get("vix"):
+                st.metric("VIX", f"{kl['vix']:.1f}",
+                         delta="above strategy threshold (15)"
+                         if kl['vix'] > 15 else "within strategy range",
+                         delta_color="inverse" if kl['vix'] > 15 else "normal")
+            if kl.get("oil_price"):
+                st.metric("WTI Crude", f"${kl['oil_price']:.1f}/bbl")
+
+        st.divider()
+        st.markdown("### Research Scientist observations")
+        st.caption("These values are passed directly to the Research Scientist when running the pipeline.")
+        obs = macro_snapshot_to_observations(snapshot)
+        for k, v in obs.items():
+            st.markdown(f"**{k}**: {v}")
+
+        # Strategy implication
+        st.divider()
+        st.markdown("### Strategy implications")
+        vix = kl.get("vix", 0)
+        cpi = kl.get("cpi_yoy_pct", 0)
+        spread = kl.get("yield_spread_10y2y", 0)
+
+        implications = []
+        if vix and vix > 15:
+            implications.append(
+                f"⚠️ VIX {vix:.1f} is above the <15 entry threshold used by "
+                f"most registered alphas — momentum strategies currently outside "
+                f"their optimal deployment window"
+            )
+        if cpi and cpi > 4:
+            implications.append(
+                f"⚠️ CPI YoY {cpi:.1f}% is elevated — earnings revision signals "
+                f"may be distorted by nominal growth; consider real earnings adjustments"
+            )
+        if spread is not None and 0 < spread < 0.5:
+            implications.append(
+                f"⚠️ Yield curve flat ({spread:.2f}%) — historically precedes "
+                f"late-cycle slowdown; momentum strategies show reduced persistence "
+                f"in flat-curve environments"
+            )
+        if not implications:
+            implications.append("✅ Macro conditions broadly supportive of deployed strategies")
+
+        for imp in implications:
+            st.markdown(f"- {imp}")
+
+        # Economic calendar
+        st.divider()
+        st.markdown("### Economic calendar (next 30 days)")
+        try:
+            from src.data.fred_client import get_upcoming_releases, calendar_to_risk_context
+            with st.spinner("Loading calendar..."):
+                cal_events = get_upcoming_releases(days_ahead=30)
+            ctx = calendar_to_risk_context(cal_events)
+
+            risk_colors = {
+                "low": "✅", "moderate": "🟡",
+                "elevated": "🟠", "critical": "🔴"
+            }
+            st.markdown(
+                f"{risk_colors.get(ctx['near_term_risk'], '⚪')} "
+                f"**Near-term risk: {ctx['near_term_risk'].upper()}** — "
+                f"{ctx['summary']}"
+            )
+
+            if cal_events:
+                import pandas as pd
+                cal_df = pd.DataFrame([{
+                    "Date": e["date"],
+                    "Days": e["days_until"],
+                    "Event": e["name"],
+                    "Importance": e["importance"],
+                    "Signal": e["signal"],
+                    "VIX Impact": e["typical_vix_impact"]
+                } for e in cal_events])
+                st.dataframe(cal_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No major events in the next 30 days.")
+        except Exception as e:
+            st.warning(f"Calendar unavailable: {e}")
 
 
 db.close()

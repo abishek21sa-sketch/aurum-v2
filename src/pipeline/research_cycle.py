@@ -31,15 +31,32 @@ from src.agents.alpha_registrar import register_alpha
 
 from src.core.config import ANTHROPIC_API_KEY
 
-# ── Default market observations ───────────────────────────────────
-DEFAULT_OBSERVATIONS = {
-    "momentum_signal": "strong positive price momentum across large cap equities, 12-1 month",
-    "volatility_regime": "low volatility, VIX around 14, compressing further",
-    "earnings_trend": "positive earnings revisions in technology and industrials",
-    "macro_regime": "expansion, GDP growth above trend",
-    "rate_environment": "stable, Fed on hold",
-    "institutional_flow": "consistent buying in growth factors over past 4 weeks"
-}
+def _get_default_observations() -> dict:
+    try:
+        from src.data.fred_client import get_macro_snapshot, macro_snapshot_to_observations
+        snapshot = get_macro_snapshot()
+        if "error" not in snapshot:
+            fred_obs = macro_snapshot_to_observations(snapshot, include_calendar=True)
+            return {
+                "momentum_signal": "strong positive price momentum across large cap equities, 12-1 month",
+                "earnings_trend": "positive earnings revisions in technology and industrials",
+                "institutional_flow": "consistent buying in growth factors over past 4 weeks",
+                **fred_obs
+            }
+    except Exception as e:
+        print(f"  FRED unavailable, using static observations: {e}")
+
+    return {
+        "momentum_signal": "strong positive price momentum across large cap equities, 12-1 month",
+        "volatility_regime": "low volatility, VIX around 14, compressing further",
+        "earnings_trend": "positive earnings revisions in technology and industrials",
+        "macro_regime": "expansion, GDP growth above trend",
+        "rate_environment": "stable, Fed on hold",
+        "institutional_flow": "consistent buying in growth factors over past 4 weeks",
+        "event_risk": "calendar unavailable"
+    }
+
+DEFAULT_OBSERVATIONS = _get_default_observations()
 
 # ── Pipeline state tracker ────────────────────────────────────────
 class PipelineResult:
