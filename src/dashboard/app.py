@@ -44,7 +44,24 @@ def load_memories(db):
 # ── Sidebar navigation ────────────────────────────────────────────
 st.sidebar.title("AURUM V2")
 st.sidebar.caption("AI-native quantitative research firm")
-page = st.sidebar.radio("Navigate", ["Research Feed", "Hypothesis Detail", "Research Memory", "Memory Lineage", "Alpha Registry", "Research Copilot", "Knowledge Graph", "Portfolio Lab"])
+st.sidebar.markdown("**Research Operations**")
+page = st.sidebar.radio("Navigate", [
+    "🏠 Mission Control",
+    "📋 Experiment Board",
+    "⏳ Approval Queue",
+    "📈 Paper Trading Queue",
+    "🗄️ Retirement Queue",
+    "──────────────",
+    "Research Feed",
+    "Hypothesis Detail",
+    "Research Memory",
+    "Memory Lineage",
+    "Alpha Registry",
+    "Research Copilot",
+    "Knowledge Graph",
+    "Portfolio Lab"
+])
+
 db = get_db()
 
 # ── Page: Research Feed ───────────────────────────────────────────
@@ -665,5 +682,209 @@ elif page == "Portfolio Lab":
                                 st.caption(f"🔔 {impact['circuit_breaker_note']}")
                             if impact["idiosyncratic_note"]:
                                 st.caption(f"⚡ {impact['idiosyncratic_note']}")
+# Handle divider
+if page == "──────────────":
+    st.info("Select a page from the navigation.")
+elif page == "🏠 Mission Control":
+    st.title("Mission control")
+    st.caption("AURUM V2 research operations — what needs attention right now.")
+
+    from src.agents.workflow_engine import WorkflowEngine
+    engine = WorkflowEngine(db)
+
+    attention_items = engine.get_needs_attention()
+    tickets = engine.get_all_tickets()
+    approval_queue = engine.get_approval_queue()
+    paper_queue = engine.get_paper_trading_queue()
+    retirement_queue = engine.get_retirement_queue()
+
+    # Top metrics
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Total hypotheses", len(tickets))
+    m2.metric("Pending approval", len(approval_queue))
+    m3.metric("Paper trading", len(paper_queue))
+    m4.metric("Decay flagged", sum(1 for t in tickets if t.decay_flag))
+    m5.metric("Compliance warnings",
+              sum(1 for t in tickets if t.compliance_warning))
+
+    st.divider()
+
+    # Needs attention
+    if attention_items:
+        st.markdown("### ⚡ Needs attention")
+        for item in attention_items:
+            color = "error" if item["priority"] == "high" else "warning"
+            getattr(st, color)(
+                f"**{item['type'].replace('_', ' ').title()}** — "
+                f"{item['message']} "
+                f"(H#{', #'.join(str(n) for n in item['tickets'])})"
+            )
+    else:
+        st.success("No items need immediate attention.")
+
+    st.divider()
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### Approval queue")
+        if approval_queue:
+            for t in approval_queue[:5]:
+                with st.container(border=True):
+                    c1, c2 = st.columns([3, 1])
+                    c1.markdown(f"**H#{t.number}** — {t.title[:45]}")
+                    c2.markdown(f"`{t.stage.value}`")
+                    st.caption(f"Next: {t.next_action} | {t.days_in_stage}d in stage")
+                    if t.compliance_warning:
+                        st.caption("⚠️ Has compliance warning")
+        else:
+            st.info("Nothing pending approval.")
+
+    with col2:
+        st.markdown("### Paper trading")
+        if paper_queue:
+            for t in paper_queue[:5]:
+                with st.container(border=True):
+                    decay_icon = "⚠️" if t.decay_flag else "✅"
+                    st.markdown(f"{decay_icon} **H#{t.number}** — {t.title[:45]}")
+                    if t.hypothesis.sharpe_ratio:
+                        st.caption(f"Sharpe {t.hypothesis.sharpe_ratio:.3f} | "
+                                  f"MaxDD {t.hypothesis.max_drawdown:.1%}")
+        else:
+            st.info("No hypotheses in paper trading.")
+
+elif page == "📋 Experiment Board":
+    st.title("Experiment board")
+    st.caption("All hypotheses as research tickets, grouped by governance stage.")
+
+    from src.agents.workflow_engine import WorkflowEngine
+    engine = WorkflowEngine(db)
+    board = engine.get_experiment_board()
+
+    STAGE_ORDER = ["idea", "experiment", "statistical_review", "risk_review",
+                   "committee", "paper_trading", "production", "monitoring", "retired"]
+    STAGE_COLORS = {
+        "idea": "🔵", "experiment": "🟡", "statistical_review": "🟠",
+        "risk_review": "🟠", "committee": "🔴", "paper_trading": "🟢",
+        "production": "✅", "monitoring": "✅", "retired": "⚫"
+    }
+
+    for stage in STAGE_ORDER:
+        tickets = board.get(stage, [])
+        if not tickets:
+            continue
+        icon = STAGE_COLORS.get(stage, "⚪")
+        st.markdown(f"### {icon} {stage.replace('_', ' ').title()} ({len(tickets)})")
+        cols = st.columns(min(len(tickets), 3))
+        for i, t in enumerate(tickets):
+            with cols[i % 3]:
+                with st.container(border=True):
+                    warn = "⚠️ " if t.compliance_warning else ""
+                    st.markdown(f"**{warn}H#{t.number}**")
+                    st.caption(t.title[:50])
+                    if t.has_backtest:
+                        st.caption(f"Sharpe {t.hypothesis.sharpe_ratio:.3f}")
+                    st.caption(f"Next: {t.next_action}")
+                    st.caption(f"{t.days_in_stage}d in stage")
+
+elif page == "⏳ Approval Queue":
+    st.title("Approval queue")
+    st.caption("Hypotheses waiting for the next pipeline step — oldest first.")
+
+    from src.agents.workflow_engine import WorkflowEngine
+    engine = WorkflowEngine(db)
+    queue = engine.get_approval_queue()
+
+    if not queue:
+        st.success("Approval queue is empty.")
+    else:
+        for t in queue:
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3, 1, 1])
+                c1.markdown(f"**H#{t.number} — {t.title}**")
+                c2.markdown(f"`{t.stage.value}`")
+                c3.markdown(f"**{t.days_in_stage}d**")
+
+                st.caption(f"🔧 Next action: **{t.next_action}** (actor: {t.actor})")
+                if t.command:
+                    st.code(t.command, language="bash")
+                if t.compliance_warning:
+                    st.warning("This hypothesis has unresolved compliance warnings — "
+                              "review governance timeline before proceeding.")
+
+elif page == "📈 Paper Trading Queue":
+    st.title("Paper trading queue")
+    st.caption("Approved alphas currently in paper trading — monitor for decay.")
+
+    from src.agents.workflow_engine import WorkflowEngine
+    from sqlalchemy import text as sqla_text
+    engine = WorkflowEngine(db)
+    queue = engine.get_paper_trading_queue()
+
+    if not queue:
+        st.info("No hypotheses in paper trading.")
+    else:
+        for t in queue:
+            with st.container(border=True):
+                decay_icon = "⚠️ DECAY" if t.decay_flag else "✅ Active"
+                st.markdown(f"**H#{t.number} — {t.title}** — {decay_icon}")
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Backtest Sharpe",
+                          f"{t.hypothesis.sharpe_ratio:.3f}"
+                          if t.hypothesis.sharpe_ratio else "—")
+                m2.metric("Max DD",
+                          f"{t.hypothesis.max_drawdown:.1%}"
+                          if t.hypothesis.max_drawdown else "—")
+                m3.metric("Days in paper trading", t.days_in_stage)
+
+                # Latest learning report
+                lr = db.execute(sqla_text(
+                    "SELECT paper_sharpe, recommended_action, evaluated_at "
+                    "FROM learning_reports WHERE hypothesis_id = :hid "
+                    "ORDER BY evaluated_at DESC LIMIT 1"
+                ), {"hid": str(t.hypothesis.id)}).fetchone()
+
+                if lr:
+                    st.caption(
+                        f"Latest eval: Paper Sharpe {lr.paper_sharpe:.3f} | "
+                        f"Action: {lr.recommended_action} | "
+                        f"Date: {str(lr.evaluated_at)[:10]}"
+                    )
+
+elif page == "🗄️ Retirement Queue":
+    st.title("Retirement queue")
+    st.caption("Signals flagged for decay or stuck in revision — review for retirement.")
+
+    from src.agents.workflow_engine import WorkflowEngine
+    engine = WorkflowEngine(db)
+    queue = engine.get_retirement_queue()
+
+    if not queue:
+        st.success("No signals flagged for retirement.")
+    else:
+        for t in queue:
+            with st.container(border=True):
+                reason = "Decay flagged" if t.decay_flag else "Revision requested >7 days"
+                st.markdown(f"**H#{t.number} — {t.title}**")
+                st.caption(f"Reason: {reason} | Stage: {t.stage.value} | "
+                          f"{t.days_in_stage}d in stage")
+
+                from src.agents.governance_actions import retire_hypothesis
+                from src.models.governance import GovernanceStage
+                retire_key = f"retire_queue_{t.number}"
+                notes_key = f"retire_notes_{t.number}"
+                notes = st.text_input("Retirement reason", key=notes_key,
+                                     placeholder="Document reason for retirement...")
+                if st.button(f"🗄️ Retire H#{t.number}", key=retire_key, type="secondary"):
+                    if notes:
+                        ok, msg = retire_hypothesis(db, t.hypothesis, notes)
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                    else:
+                        st.error("Retirement reason is required.")
+
 
 db.close()
