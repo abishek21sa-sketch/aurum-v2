@@ -171,6 +171,37 @@ def run_pipeline(
         _ok(f"H#{hyp.hypothesis_number}: {hyp.title}")
         _ok(f"{len(hyp.signal_components)} signal components, "
             f"{hyp.expected_holding_days}d holding, {hyp.universe}")
+
+        # Verify memory compliance immediately after generation
+        try:
+            from src.agents.research_memory_service import ResearchMemoryService
+            service = ResearchMemoryService(db)
+            obs_text = " ".join(str(v) for v in observations.values()).lower()
+            inferred_signals = []
+            if "momentum" in obs_text: inferred_signals.append("price_momentum")
+            if "earnings" in obs_text: inferred_signals.append("earnings_revision")
+            if "volatil" in obs_text: inferred_signals.append("volatility")
+            inferred_conditions = {}
+            if "expansion" in obs_text: inferred_conditions["macro_regime"] = "expansion"
+            if "vix" in obs_text: inferred_conditions["vix_range"] = "<15"
+
+            applicable = service.get_applicable_constraints(
+                inferred_signals, inferred_conditions, hyp.expected_holding_days or 21
+            )
+            if applicable:
+                compliance = service.verify_hypothesis_compliance(hyp, applicable)
+                result.record("memory_compliance", compliance)
+                score = compliance["overall_compliance"]
+                n = compliance["n_constraints_checked"]
+                if compliance["verified"]:
+                    _ok(f"Memory compliance: {score:.0%} across {n} constraint(s)")
+                else:
+                    _warn(f"Memory compliance: {score:.0%} — some constraints not honored")
+                    for check in compliance["checks"]:
+                        if not check["compliant"]:
+                            _warn(f"  [{check['failure_mode']}]: {check.get('violation', '')[:100]}")
+        except Exception as e:
+            _warn(f"Compliance check skipped: {e}")
     except Exception as e:
         result.fail("generate", str(e))
         _fail(str(e))

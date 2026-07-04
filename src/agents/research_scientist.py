@@ -132,10 +132,11 @@ def retrieve_relevant_memories(db: Session, signal_types: list[str], conditions:
 
     return relevant[:5]
 
-def build_observation_prompt(observations: dict, memories: list[dict]) -> str:
+def build_observation_prompt(observations: dict,
+                              memories: list[dict],
+                              active_constraints: str = "") -> str:
     ks = get_knowledge_store()
 
-    # Add real sector/ETF context to help the scientist reason about concentration
     top_tech = ks.get_sector_tickers("Information Technology")
     top_fin = ks.get_sector_tickers("Financials")
     nvda_etfs = [e["etf"] for e in ks.get_etf_exposure("NVDA")]
@@ -157,7 +158,14 @@ Knowledge Graph Context (use when reasoning about sector concentration and crowd
 
 {knowledge_context}
 """
-    if memories:
+
+    # Active constraints take priority over passive memories
+    if active_constraints:
+        prompt += f"""
+{active_constraints}
+
+"""
+    elif memories:
         prompt += f"""Research memory — past failures relevant to these conditions:
 {json.dumps(memories, indent=2)}
 
@@ -165,29 +173,62 @@ Apply these lessons when constructing the hypothesis. If a past failure directly
 adjust the signal components or conditions to avoid repeating it.
 
 """
+
     prompt += "Generate one high-quality investment hypothesis based on these observations."
     return prompt
 
-def generate_hypothesis(db: Session, observations: dict) -> Hypothesis:
-    """
-    Core generation loop.
-    observations: dict of current market signals, e.g.:
-    {
-        "momentum_signal": "strong positive across large caps",
-        "volatility_regime": "low (VIX ~14)",
-        "earnings_trend": "positive revisions in tech sector",
-        "macro_regime": "expansion",
-        "rate_environment": "stable"
-    }
-    """
-
-    # 1. Pull relevant research memories
+def generate_hypothesis(db: Session, observations: dict,
+                         use_memory_service: bool = True) -> Hypothesis:
     signal_hints = list(observations.keys())
-    memories = retrieve_relevant_memories(db, signal_hints, observations)
 
-    # 2. Build prompt and call Claude
-    user_prompt = build_observation_prompt(observations, memories)
+    # Use the reasoning service if available, fall back to passive retrieval
+    active_constraints = ""
+    memories = []
 
+    if use_memory_service:
+        try:
+            from src.agents.research_memory_service import ResearchMemoryService
+            service = ResearchMemoryService(db)
+
+            # Infer signal types from observation keys for constraint compilation
+            inferred_signals = []
+            obs_text = " ".join(str(v) for v in observations.values()).lower()
+            if "momentum" in obs_text: inferred_signals.append("price_momentum")
+            if "earnings" in obs_text or "revision" in obs_text:
+                inferred_signals.append("earnings_revision")
+            if "volatil" in obs_text or "vix" in obs_text:
+                inferred_signals.append("volatility")
+            if "institutional" in obs_text or "flow" in obs_text:
+                inferred_signals.append("institutional_flow_proxy")
+
+            # Infer conditions
+            inferred_conditions = {}
+            if "expansion" in obs_text: inferred_conditions["macro_regime"] = "expansion"
+            if "low vol" in obs_text or "vix" in obs_text:
+                inferred_conditions["vix_range"] = "<15"
+            if "stable" in obs_text: inferred_conditions["rate_environment"] = "stable"
+
+            applicable = service.get_applicable_constraints(
+                signal_types=inferred_signals,
+                conditions=inferred_conditions,
+                holding_days=21
+            )
+
+            if applicable:
+                active_constraints = service.format_constraints_for_scientist(applicable)
+                print(f"  Memory Service: {len(applicable)} active constraint(s) compiled")
+                for c in applicable:
+                    print(f"    [{c['failure_mode']}]: {c['constraint'][:80]}")
+            else:
+                print("  Memory Service: no applicable constraints found")
+
+        except Exception as e:
+            print(f"  Memory Service unavailable, using passive retrieval: {e}")
+            memories = retrieve_relevant_memories(db, signal_hints, observations)
+    else:
+        memories = retrieve_relevant_memories(db, signal_hints, observations)
+
+    user_prompt = build_observation_prompt(observations, memories, active_constraints)
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=2000,

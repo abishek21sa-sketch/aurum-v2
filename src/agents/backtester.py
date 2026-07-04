@@ -130,6 +130,12 @@ def build_composite_signal(close: pd.DataFrame,
             s = compute_volatility_compression(close, short_window=21, long_window=63)
         elif "institutional" in factor or "flow" in factor:
             s = compute_institutional_accumulation(close, volume, lookback=lb)
+        elif any(kw in factor for kw in ["circuit_breaker", "stop", "cap", "concentration", "trigger", "overlay", "exit"]):
+            # Risk overlay components — not return-generating signals.
+            # Acknowledged and intentionally skipped; they affect execution
+            # logic (handled in run_backtest_with_circuit_breaker) not signal
+            # construction. Suppress the warning for known overlay types.
+            continue
         else:
             print(f"  UNHANDLED FACTOR: '{factor}' (no keyword match, skipping)")
             continue
