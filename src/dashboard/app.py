@@ -699,13 +699,32 @@ elif page == "🏠 Mission Control":
     retirement_queue = engine.get_retirement_queue()
 
     # Top metrics
-    m1, m2, m3, m4, m5 = st.columns(5)
+    # Top metrics
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Total hypotheses", len(tickets))
     m2.metric("Pending approval", len(approval_queue))
     m3.metric("Paper trading", len(paper_queue))
     m4.metric("Decay flagged", sum(1 for t in tickets if t.decay_flag))
     m5.metric("Compliance warnings",
               sum(1 for t in tickets if t.compliance_warning))
+
+    # Scheduler button
+    if m6.button("⚙️ Run Scheduler", type="secondary", key="run_scheduler"):
+        from src.agents.research_scheduler import run_scheduler
+        with st.spinner("Running research scheduler..."):
+            schedule_result = run_scheduler(db)
+        st.session_state["last_schedule"] = schedule_result
+        st.rerun()
+
+    if "last_schedule" in st.session_state:
+        sr = st.session_state["last_schedule"]
+        with st.expander(f"Last scheduler run — {sr['total_decided']} decisions"):
+            st.caption(sr["summary"])
+            for d in sr["decisions"]:
+                icon = {"RUN": "🟢", "DELAY": "🟡",
+                        "CANCEL": "🔴", "MERGE": "🔵"}.get(d["action"], "⚪")
+                st.markdown(f"{icon} **H#{d['hypothesis_number']}** → {d['action']} "
+                           f"(score {d['priority_score']:.2f}) — {d['reasoning'][:80]}")
 
     st.divider()
 

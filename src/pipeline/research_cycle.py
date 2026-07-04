@@ -531,6 +531,20 @@ def run_pipeline(
         _warn(f"Memory extraction failed (non-critical): {e}")
 
     result.final_outcome = "COMPLETE — hypothesis approved, awaiting paper trading"
+
+    # Run scheduler at end of each cycle to re-prioritize the queue
+    try:
+        from src.agents.research_scheduler import run_scheduler
+        print(f"\n  Running scheduler to re-prioritize experiment queue...")
+        schedule_result = run_scheduler(db)
+        print(f"  Scheduler: {schedule_result['summary'][:100]}")
+        result.record("scheduler", {
+            "decisions": len(schedule_result["decisions"]),
+            "summary": schedule_result["summary"]
+        })
+    except Exception as e:
+        _warn(f"Scheduler skipped: {e}")
+
     return result
 
 def main():
