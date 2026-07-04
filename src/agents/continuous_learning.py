@@ -184,6 +184,28 @@ def run_full_registry_evaluation(db: Session) -> list[dict]:
         print(f"  {flag}H#{r['hypothesis_number']}: {r['recommended_action']} "
               f"(Sharpe {r['paper_sharpe']} vs {r['original_backtest_sharpe']})")
 
+    # Run learning analyst on all evaluated alphas
+    print(f"\nRunning Learning Analyst on {len(reports)} evaluated alpha(s)...")
+    try:
+        from src.agents.learning_analyst import analyze_learning_report
+        for report in reports:
+            hyp = db.query(Hypothesis).filter_by(
+                hypothesis_number=report["hypothesis_number"]
+            ).first()
+            if hyp:
+                analysis = analyze_learning_report(db, hyp, report)
+                report["analysis"] = {
+                    "root_cause_category": analysis["root_cause_category"],
+                    "confidence": analysis["confidence"],
+                    "recommended_action": analysis["recommended_action"],
+                    "memory_written": bool(analysis.get("memory_id"))
+                }
+                print(f"  H#{hyp.hypothesis_number}: [{analysis['root_cause_category']}] "
+                      f"→ {analysis['recommended_action']}"
+                      f"{' ✅ memory' if analysis.get('memory_id') else ''}")
+    except Exception as e:
+        print(f"  Learning Analyst skipped: {e}")
+
     return reports
 
 def print_learning_report(report: dict):
