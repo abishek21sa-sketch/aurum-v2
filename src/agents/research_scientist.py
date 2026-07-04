@@ -231,12 +231,12 @@ def generate_hypothesis(db: Session, observations: dict,
     user_prompt = build_observation_prompt(observations, memories, active_constraints)
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=2000,
+        max_tokens=3000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_prompt}]
     )
     if response.stop_reason == "max_tokens":
-        print("  WARNING: hypothesis generation truncated at max_tokens=2000")
+        print("  WARNING: hypothesis generation truncated at max_tokens=3000")
 
     raw = response.content[0].text.strip()
 
@@ -247,11 +247,39 @@ def generate_hypothesis(db: Session, observations: dict,
             raw = raw[4:]
         raw = raw.strip()
 
-    # 3. Parse response
+    # 3. Parse response — with truncation recovery
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Research Scientist returned invalid JSON: {e}\nRaw: {raw}")
+        # Response was likely truncated mid-JSON by max_tokens limit.
+        # Attempt recovery: truncate at the last complete top-level field
+        # by finding the last complete closing of a major array/object.
+        try:
+            # Find the last position where risk_factors or rationale closed cleanly
+            # Try progressively shorter truncation points
+            recovery_raw = raw
+            for closing in ['",\n  "risk_factors"', '",\n  "rationale"',
+                            '",\n  "universe"', '",\n  "expected_holding_days"']:
+                idx = recovery_raw.rfind(closing)
+                if idx > 0:
+                    # Truncate before this field and close the JSON
+                    truncated = recovery_raw[:idx] + '"\n}'
+                    try:
+                        data = json.loads(truncated)
+                        print(f"  WARNING: JSON recovered via truncation "
+                              f"(dropped fields after {closing.strip()})")
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            else:
+                raise ValueError(
+                    f"Research Scientist returned invalid JSON "
+                    f"(truncation recovery failed): {e}\nRaw: {raw[:500]}"
+                )
+        except Exception:
+            raise ValueError(
+                f"Research Scientist returned invalid JSON: {e}\nRaw: {raw[:500]}"
+            )
 
     # 4. Create Hypothesis record
     hypothesis_number = get_next_hypothesis_number(db)

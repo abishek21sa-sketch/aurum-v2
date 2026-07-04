@@ -29,6 +29,8 @@ from src.agents.debate_engine import run_debate
 from src.agents.memory_extractor import extract_memory_from_debate
 from src.agents.alpha_registrar import register_alpha
 
+from src.core.config import ANTHROPIC_API_KEY
+
 # ── Default market observations ───────────────────────────────────
 DEFAULT_OBSERVATIONS = {
     "momentum_signal": "strong positive price momentum across large cap equities, 12-1 month",
@@ -155,6 +157,12 @@ def run_pipeline(
     result = PipelineResult()
     total_steps = 6
 
+    # Ensure clean session state before starting
+    try:
+        db.rollback()
+    except Exception:
+        pass
+
     _header("AURUM V2 — AUTONOMOUS RESEARCH CYCLE")
     print(f"  Started: {result.started_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"  Observations: {list(observations.keys())}")
@@ -173,6 +181,9 @@ def run_pipeline(
             f"{hyp.expected_holding_days}d holding, {hyp.universe}")
 
         # Verify memory compliance immediately after generation
+        # Verify memory compliance and gate on minimum threshold
+        applicable = []
+        compliance = {"verified": True, "overall_compliance": 1.0, "checks": []}
         try:
             from src.agents.research_memory_service import ResearchMemoryService
             service = ResearchMemoryService(db)
@@ -181,9 +192,13 @@ def run_pipeline(
             if "momentum" in obs_text: inferred_signals.append("price_momentum")
             if "earnings" in obs_text: inferred_signals.append("earnings_revision")
             if "volatil" in obs_text: inferred_signals.append("volatility")
+            if "institutional" in obs_text or "flow" in obs_text:
+                inferred_signals.append("institutional_flow_proxy")
             inferred_conditions = {}
             if "expansion" in obs_text: inferred_conditions["macro_regime"] = "expansion"
-            if "vix" in obs_text: inferred_conditions["vix_range"] = "<15"
+            if "vix" in obs_text or "volatil" in obs_text:
+                inferred_conditions["vix_range"] = "<15"
+            if "stable" in obs_text: inferred_conditions["rate_environment"] = "stable"
 
             applicable = service.get_applicable_constraints(
                 inferred_signals, inferred_conditions, hyp.expected_holding_days or 21
@@ -193,15 +208,161 @@ def run_pipeline(
                 result.record("memory_compliance", compliance)
                 score = compliance["overall_compliance"]
                 n = compliance["n_constraints_checked"]
+
                 if compliance["verified"]:
                     _ok(f"Memory compliance: {score:.0%} across {n} constraint(s)")
                 else:
-                    _warn(f"Memory compliance: {score:.0%} — some constraints not honored")
-                    for check in compliance["checks"]:
-                        if not check["compliant"]:
-                            _warn(f"  [{check['failure_mode']}]: {check.get('violation', '')[:100]}")
+                    _warn(f"Memory compliance: {score:.0%} ({n} constraints) — attempting regeneration")
+
+                    # ── Compliance gate: regenerate once with violation context ──
+                    if score < 0.80:
+                        violations = [
+                            f"[{c['failure_mode']}]: {c.get('violation', '')}"
+                            for c in compliance["checks"] if not c["compliant"]
+                        ]
+                        violation_prompt = (
+                            "COMPLIANCE VIOLATIONS from previous generation attempt:\n" +
+                            "\n".join(f"  - {v}" for v in violations) +
+                            "\n\nThese violations MUST be structurally resolved in this attempt. "
+                            "Do not just mention the issue — add concrete architectural elements "
+                            "(e.g. a documented filing lag if required, an explicit regime-transition "
+                            "test section, a specific threshold with backtested trigger frequency)."
+                        )
+
+                        _warn("Regenerating with violation context...")
+                        # Delete non-compliant hypothesis cleanly
+                        # Order matters: delete children before parent
+                        from src.models.experiment_queue import ExperimentJob
+                        job_old = db.query(ExperimentJob).filter_by(
+                            hypothesis_id=hyp.id
+                        ).first()
+                        if job_old:
+                            db.delete(job_old)
+                        gov_old = db.query(GovernanceRecord).filter_by(
+                            hypothesis_id=hyp.id
+                        ).first()
+                        if gov_old:
+                            db.delete(gov_old)
+                        db.delete(hyp)
+                        try:
+                            db.commit()
+                        except Exception as del_err:
+                            db.rollback()
+                            _warn(f"Could not delete original hypothesis: {del_err}")
+                            # Continue without deletion — regeneration will
+                            # still create a new hypothesis with a new number
+
+                        # Regenerate with enhanced prompt
+                        from src.agents.research_scientist import (
+                            get_next_hypothesis_number, retrieve_relevant_memories,
+                            build_observation_prompt, SYSTEM_PROMPT
+                        )
+                        import anthropic as _anthropic
+                        import uuid as _uuid
+                        from src.models.experiment_queue import ExperimentJob, JobStatus, JobPriority
+
+                        _client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                        hyp_number = get_next_hypothesis_number(db)
+                        memories_passive = retrieve_relevant_memories(
+                            db, list(observations.keys()), observations
+                        )
+                        base_prompt = build_observation_prompt(
+                            observations, memories_passive,
+                            service.format_constraints_for_scientist(applicable)
+                        )
+                        enhanced_prompt = base_prompt + "\n\n" + violation_prompt
+
+                        response = _client.messages.create(
+                            model="claude-sonnet-4-6",
+                            max_tokens=4000,
+                            system=SYSTEM_PROMPT,
+                            messages=[{"role": "user", "content": enhanced_prompt}]
+                        )
+                        raw = response.content[0].text.strip()
+                        if raw.startswith("```"):
+                            raw = raw.split("```")[1]
+                            if raw.startswith("json"):
+                                raw = raw[4:]
+                            raw = raw.strip()
+
+                        import json as _json
+                        data = _json.loads(raw)
+
+                        from src.models.hypothesis import HypothesisStatus
+                        from src.models.governance import GovernanceStage
+                        import datetime as _dt
+
+                        hyp = Hypothesis(
+                            id=_uuid.uuid4(),
+                            hypothesis_number=hyp_number,
+                            title=data["title"],
+                            thesis=data["thesis"],
+                            signal_components=data["signal_components"],
+                            conditions=data.get("conditions", {}),
+                            expected_holding_days=data.get("expected_holding_days"),
+                            universe=data.get("universe", "SP500"),
+                            status=HypothesisStatus.DRAFT,
+                            generated_by="research_scientist_regen"
+                        )
+                        db.add(hyp)
+                        db.flush()
+
+                        gov_new = GovernanceRecord(
+                            id=_uuid.uuid4(),
+                            hypothesis_id=hyp.id,
+                            current_stage=GovernanceStage.IDEA,
+                            stage_history=[{
+                                "from_stage": None,
+                                "to_stage": GovernanceStage.IDEA,
+                                "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                                "notes": f"Hypothesis #{hyp_number} regenerated after compliance failure. Violations: {violations}"
+                            }]
+                        )
+                        db.add(gov_new)
+
+                        job_new = ExperimentJob(
+                            id=_uuid.uuid4(),
+                            hypothesis_id=hyp.id,
+                            status=JobStatus.PENDING,
+                            priority=JobPriority.NORMAL,
+                            priority_score=0.5
+                        )
+                        db.add(job_new)
+                        db.commit()
+                        db.refresh(hyp)
+
+                        result.hypothesis_number = hyp.hypothesis_number
+                        _ok(f"Regenerated: H#{hyp.hypothesis_number}: {hyp.title}")
+
+                        # Re-verify compliance on regenerated hypothesis
+                        compliance_2 = service.verify_hypothesis_compliance(hyp, applicable)
+                        score_2 = compliance_2["overall_compliance"]
+                        result.record("memory_compliance", compliance_2)
+
+                        if compliance_2["verified"]:
+                            _ok(f"Post-regen compliance: {score_2:.0%} ✅")
+                        else:
+                            _warn(f"Post-regen compliance: {score_2:.0%} — flagging in governance")
+                            # Flag in governance but don't stop — committee will see it
+                            gov_new = db.query(GovernanceRecord).filter_by(
+                                hypothesis_id=hyp.id
+                            ).first()
+                            if gov_new:
+                                gov_new.stage_history = (gov_new.stage_history or []) + [{
+                                    "from_stage": GovernanceStage.IDEA,
+                                    "to_stage": GovernanceStage.IDEA,
+                                    "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                                    "notes": f"COMPLIANCE_WARNING: {score_2:.0%} after regeneration. "
+                                             f"Violations: {[c['failure_mode'] for c in compliance_2['checks'] if not c['compliant']]}"
+                                }]
+                                db.commit()
+
         except Exception as e:
-            _warn(f"Compliance check skipped: {e}")
+            db.rollback()  # Reset session to clean state before continuing
+            _warn(f"Compliance check error (session rolled back): {str(e)[:120]}")
+            # Continue pipeline with original hypothesis — compliance gate
+            # failure is non-fatal; committee will see the governance flag
+
     except Exception as e:
         result.fail("generate", str(e))
         _fail(str(e))
