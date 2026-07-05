@@ -601,9 +601,10 @@ elif page == "Knowledge Graph":
 # ── Page: Portfolio Lab ───────────────────────────────────────────
 elif page == "Portfolio Lab":
     st.title("Portfolio laboratory")
-    st.caption("Stress-test registered alphas against macro and market shock scenarios.")
+    st.caption("Stress-test registered alphas against macro scenarios — decisions require approval before writing to governance.")
 
     from src.agents.portfolio_lab import SCENARIOS, estimate_alpha_scenario_impact, explain_scenario_impact
+    from src.agents.scenario_decision_engine import make_scenario_decision, apply_scenario_decision
     from src.models.alpha_registry import AlphaSignal
 
     alphas = db.query(AlphaSignal).filter_by(is_active=True).all()
@@ -621,68 +622,126 @@ elif page == "Portfolio Lab":
                 format_func=lambda k: SCENARIOS[k]["name"],
                 key="lab_scenario"
             )
-
             scenario = SCENARIOS[scenario_key]
             st.divider()
             st.caption(scenario["description"])
             st.caption(f"Historical analogs: {', '.join(scenario['historical_analogs'])}")
-            st.caption(f"VIX spike: +{scenario['vix_spike']} pts | Duration: {scenario['duration_days']}d")
+            st.caption(f"VIX spike: +{scenario['vix_spike']} pts | "
+                      f"Duration: {scenario['duration_days']}d")
 
         with col2:
-            st.markdown("### Alpha impact analysis")
+            st.markdown("### Alpha impact + decisions")
 
             if st.button("Run stress test", type="primary", key="lab_run"):
-                with st.spinner(f"Running {scenario['name']} across {len(alphas)} alpha(s)..."):
-                    results = []
+                results = []
+                with st.spinner(f"Analysing {len(alphas)} alpha(s)..."):
                     for alpha in alphas:
-                        hyp = db.query(Hypothesis).filter_by(id=alpha.hypothesis_id).first()
-                        if hyp:
-                            impact = estimate_alpha_scenario_impact(alpha, hyp, scenario)
-                            explanation = explain_scenario_impact(
-                                alpha, hyp, scenario_key, impact
-                            )
-                            results.append({
-                                "alpha": alpha,
-                                "hyp": hyp,
-                                "impact": impact,
-                                "explanation": explanation
-                            })
-                    st.session_state["lab_results"] = results
+                        hyp = db.query(Hypothesis).filter_by(
+                            id=alpha.hypothesis_id
+                        ).first()
+                        if not hyp:
+                            continue
+                        impact = estimate_alpha_scenario_impact(
+                            alpha, hyp, scenario
+                        )
+                        explanation = explain_scenario_impact(
+                            alpha, hyp, scenario_key, impact
+                        )
+                        decision = make_scenario_decision(
+                            alpha, hyp, scenario_key,
+                            scenario, impact, explanation
+                        )
+                        results.append({
+                            "alpha": alpha,
+                            "hyp": hyp,
+                            "impact": impact,
+                            "explanation": explanation,
+                            "decision": decision,
+                            "applied": False
+                        })
+                st.session_state["lab_results"] = results
+                st.session_state["lab_scenario_key"] = scenario_key
+                st.session_state["lab_scenario_name"] = scenario["name"]
 
             if "lab_results" in st.session_state:
-                for r in st.session_state["lab_results"]:
-                    with st.container(border=True):
-                        impact = r["impact"]
-                        alpha = r["alpha"]
-                        hyp = r["hyp"]
+                for i, r in enumerate(st.session_state["lab_results"]):
+                    impact = r["impact"]
+                    alpha = r["alpha"]
+                    hyp = r["hyp"]
+                    decision = r["decision"]
 
-                        h1, h2, h3, h4 = st.columns(4)
+                    with st.container(border=True):
+                        # Header row
+                        h1, h2, h3, h4, h5 = st.columns([2, 1, 1, 1, 1])
                         h1.markdown(f"**H#{hyp.hypothesis_number}**")
                         impact_pct = impact['estimated_portfolio_impact'] * 100
-                        h2.metric(
-                            "Est. Impact",
-                            f"{impact_pct:.1f}%",
-                            delta=f"{impact_pct:.1f}%",
-                            delta_color="inverse"
+                        h2.metric("Impact", f"{impact_pct:.1f}%",
+                                 delta=f"{impact_pct:.1f}%",
+                                 delta_color="inverse")
+                        h3.metric("CB", "FIRES ✅" if impact[
+                            "circuit_breaker_fires"] else "idle ⚠️")
+
+                        # Decision badge
+                        decision_action = decision.get("decision", "HOLD")
+                        decision_colors = {
+                            "HOLD": "🟢", "REDUCE": "🟡", "HEDGE": "🟡",
+                            "RECALIBRATE": "🟠", "RETIRE": "🔴", "RESEARCH": "🔵"
+                        }
+                        h4.markdown(
+                            f"**{decision_colors.get(decision_action, '⚪')} "
+                            f"{decision_action}**"
                         )
-                        h3.metric(
-                            "Circuit Breaker",
-                            "FIRES ✅" if impact["circuit_breaker_fires"] else "idle ⚠️"
-                        )
-                        h4.metric("Crowding", f"{impact['crowding_amplifier']:.2f}x")
+                        h5.metric("Confidence",
+                                 f"{decision.get('confidence', 0):.0%}")
 
                         st.caption(alpha.signal_name)
-                        st.write(r["explanation"])
 
-                        with st.expander("Impact breakdown"):
-                            b1, b2, b3 = st.columns(3)
-                            b1.metric("Sector contribution", f"{impact['sector_contribution']*100:.1f}%")
-                            b2.metric("Factor contribution", f"{impact['factor_contribution']*100:.1f}%")
-                            b3.metric("VIX spike", f"+{impact['vix_spike']} pts")
-                            if impact["circuit_breaker_note"]:
-                                st.caption(f"🔔 {impact['circuit_breaker_note']}")
-                            if impact["idiosyncratic_note"]:
-                                st.caption(f"⚡ {impact['idiosyncratic_note']}")
+                        # Rationale
+                        with st.expander("Decision rationale"):
+                            st.write(decision.get("rationale", ""))
+                            if decision.get("action_detail"):
+                                st.info(f"**Recommended action:** "
+                                       f"{decision['action_detail']}")
+                            if decision_action == "RESEARCH" and decision.get(
+                                    "research_trigger"):
+                                rt = decision["research_trigger"]
+                                st.success(
+                                    f"**New research angle:** {rt.get('hypothesis_angle')}\n\n"
+                                    f"**Scenario constraint:** {rt.get('scenario_constraint')}\n\n"
+                                    f"**Priority:** {rt.get('priority', 'medium')}"
+                                )
+
+                        # Explanation
+                        with st.expander("Scenario analysis"):
+                            st.write(r["explanation"])
+
+                        # Apply button (only if not already applied)
+                        if not r.get("applied"):
+                            if decision_action != "HOLD":
+                                apply_key = f"apply_{i}_{hyp.hypothesis_number}"
+                                if st.button(
+                                    f"✅ Apply {decision_action} decision",
+                                    key=apply_key,
+                                    type="secondary"
+                                ):
+                                    applied = apply_scenario_decision(
+                                        db, alpha, hyp, decision,
+                                        st.session_state.get(
+                                            "lab_scenario_key", scenario_key
+                                        ),
+                                        st.session_state.get(
+                                            "lab_scenario_name", scenario["name"]
+                                        )
+                                    )
+                                    st.session_state["lab_results"][i]["applied"] = True
+                                    st.success(f"Applied: {applied['result']}")
+                                    st.rerun()
+                            else:
+                                st.caption("✅ HOLD — no action required")
+                        else:
+                            st.caption("✅ Decision applied to governance")
+
+
 # Handle divider
 if page == "──────────────":
     st.info("Select a page from the navigation.")
