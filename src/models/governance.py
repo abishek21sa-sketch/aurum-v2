@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, JSON, ForeignKey, Enum
+from sqlalchemy import Column, String, Text, Float, DateTime, JSON, ForeignKey, Enum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from src.core.database import Base
@@ -44,6 +44,12 @@ class GovernanceRecord(Base):
     failure_reason = Column(Text, nullable=True)
     lessons_learned = Column(Text, nullable=True)
     retirement_notes = Column(Text, nullable=True)
+
+    # Metadata
+    # Workflow fields (added in Layer 4)
+    assigned_to = Column(String(100), nullable=True)
+    next_action = Column(String(200), nullable=True)
+    priority_score = Column(Float, default=0.5)
 
     # Metadata
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

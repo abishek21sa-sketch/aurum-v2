@@ -1,10 +1,11 @@
-from src.core.database import Base, engine
-from src.models import *
+from alembic.config import Config
+from alembic import command
 
 def init_db():
-    print("Creating all tables...")
-    Base.metadata.create_all(bind=engine)
-    print("Done.")
+    print("Running Alembic migrations...")
+    alembic_cfg = Config("alembic.ini")
+    command.upgrade(alembic_cfg, "head")
+    print("Database is at head revision.")
 
 if __name__ == "__main__":
     init_db()

@@ -217,9 +217,13 @@ pip install anthropic psycopg2-binary sqlalchemy alembic pandas numpy \
 DATABASE_URL=postgresql://postgres:<password>@localhost:5432/aurum_v2
 ANTHROPIC_API_KEY=sk-ant-...
 
-# 3. Create the database and all tables
+# 3. Create the database and run migrations
 createdb aurum_v2
-python main.py
+python main.py   # runs alembic upgrade head
+
+# For future schema changes:
+alembic revision --autogenerate -m "description of change"
+alembic upgrade head
 
 # 4. Generate a hypothesis (Research Scientist + Governance + Queue)
 python -m tests.test_scientist

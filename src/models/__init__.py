@@ -3,6 +3,7 @@ from src.models.governance import GovernanceRecord, GovernanceStage
 from src.models.research_memory import ResearchMemory
 from src.models.alpha_registry import AlphaSignal
 from src.models.experiment_queue import ExperimentJob, JobStatus, JobPriority
+from src.models.learning_report import LearningReport
 
 __all__ = [
     "Hypothesis", "HypothesisStatus",
